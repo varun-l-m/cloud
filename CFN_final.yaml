@@ -1,0 +1,310 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template to create OpenVPN and CTFd instances
+
+Parameters:
+  KeyPair:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: AQR_CTF_keypair
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instances
+  WhitelistedIPs:
+    Type: String
+    Default: '0.0.0.0/0'
+    Description: IPs allowed to access the OpenVPN instance
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to deploy resources (optional)
+    Default: ''
+  PublicSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet 1 to deploy resources (optional)
+    Default: ''
+  PublicSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet 2 to deploy resources (optional)
+    Default: ''
+  PrivateSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private subnet 1 to deploy resources (optional)
+    Default: ''
+  PrivateSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private subnet 2 to deploy resources (optional)
+    Default: ''
+  OpenVPNAMI:
+    Type: String
+    Description: AMI ID for the OpenVPN instance
+    Default: ami-0a36d74f29e8a3ee9
+  CTFdAMI:
+    Type: String
+    Description: AMI ID for the CTFd instance
+    Default: ami-024ebc7de0fc64e44
+
+Conditions:
+  CreateVPCResources: !Equals [ !Ref VPCId, ' ' ]
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Condition: CreateVPCResources
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: CTF-VPC
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Condition: CreateVPCResources
+    Properties:
+      Tags:
+        - Key: Name
+          Value: CTF-InternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Condition: CreateVPCResources
+    Properties:
+      VpcId: !If [CreateVPCResources, !Ref VPC, !Ref VPCId]
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Condition: CreateVPCResources
+    Properties:
+      VpcId: !If [CreateVPCResources, !Ref VPC, !Ref VPCId]
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select 
+        - 0
+        - !GetAZs 
+          Ref: 'AWS::Region'
+      Tags:
+        - Key: Name
+          Value: CTF-PublicSubnet1
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Condition: CreateVPCResources
+    Properties:
+      VpcId: !If [CreateVPCResources, !Ref VPC, !Ref VPCId]
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select 
+        - 1
+        - !GetAZs 
+          Ref: 'AWS::Region'
+      Tags:
+        - Key: Name
+          Value: CTF-PublicSubnet2
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Condition: CreateVPCResources
+    Properties:
+      VpcId: !If [CreateVPCResources, !Ref VPC, !Ref VPCId]
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select 
+        - 0
+        - !GetAZs 
+          Ref: 'AWS::Region'
+      Tags:
+        - Key: Name
+          Value: CTF-PrivateSubnet1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Condition: CreateVPCResources
+    Properties:
+      VpcId: !If [CreateVPCResources, !Ref VPC, !Ref VPCId]
+      CidrBlock: 10.0.4.0/24
+      AvailabilityZone: !Select 
+        - 1
+        - !GetAZs 
+          Ref: 'AWS::Region'
+      Tags:
+        - Key: Name
+          Value: CTF-PrivateSubnet2
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: CreateVPCResources
+    Properties:
+      VpcId: !If [CreateVPCResources, !Ref VPC, !Ref VPCId]
+      Tags:
+        - Key: Name
+          Value: CTF-RouteTable
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Condition: CreateVPCResources
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateVPCResources
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref RouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateVPCResources
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref RouteTable
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Condition: CreateVPCResources
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      AllocationId: !GetAtt EIP.AllocationId
+      Tags:
+        - Key: Name
+          Value: CTF-NatGateway
+
+  EIP:
+    Type: AWS::EC2::EIP
+    Condition: CreateVPCResources
+    Properties:
+      Domain: vpc
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: CreateVPCResources
+    Properties:
+      VpcId: !If [CreateVPCResources, !Ref VPC, !Ref VPCId]
+      Tags:
+        - Key: Name
+          Value: CTF-PrivateRouteTable
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Condition: CreateVPCResources
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateVPCResources
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateVPCResources
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  OpenVPNInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.small
+      SubnetId: !If [CreateVPCResources, !Ref PublicSubnet1, !Ref PublicSubnet1Id]
+      KeyName: !Ref KeyPair
+      ImageId: !Ref OpenVPNAMI
+      SecurityGroupIds:
+        - !Ref OpenVPNSecurityGroup
+
+  CTFdInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.medium
+      SubnetId: !If [CreateVPCResources, !Ref PrivateSubnet1, !Ref PrivateSubnet1Id]
+      KeyName: !Ref KeyPair
+      ImageId: !Ref CTFdAMI
+      SecurityGroupIds:
+        - !Ref CTFdSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          amazon-linux-extras install docker
+          service docker start
+          usermod -a -G docker ec2-user
+          chkconfig docker on
+          curl -L "https://github.com/docker/compose/releases/download/1.27.4/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          chmod +x /usr/local/bin/docker-compose
+          yum install git -y
+          cd /home/ec2-user
+          git clone https://github.com/CTFd/CTFd.git
+          cd CTFd
+          head -c 64 /dev/urandom > .ctfd_secret_key
+          docker-compose up -d
+
+  OpenVPNSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow access to OpenVPN
+      VpcId: !If [CreateVPCResources, !Ref VPC, !Ref VPCId]
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref WhitelistedIPs
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref WhitelistedIPs
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref WhitelistedIPs
+
+  CTFdSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow access to CTFd
+      VpcId: !If [CreateVPCResources, !Ref VPC, !Ref VPCId]
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref OpenVPNSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref OpenVPNSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref OpenVPNSecurityGroup
+
+Outputs:
+  OpenVPNInstanceId:
+    Description: Instance ID of the OpenVPN server
+    Value: !Ref OpenVPNInstance
+
+  CTFdInstanceId:
+    Description: Instance ID of the CTFd server
+    Value: !Ref CTFdInstance
+
+  VPCIdop:
+    Description: VPC ID where the instances are created
+    Value: !If [CreateVPCResources, !Ref VPC, !Ref VPCId]
+
+  PublicSubnet1Idop:
+    Description: Public Subnet 1 ID
+    Value: !If [CreateVPCResources, !Ref PublicSubnet1, !Ref PublicSubnet1Id]
+
+  PublicSubnet2Idop:
+    Description: Public Subnet 2 ID
+    Value: !If [CreateVPCResources, !Ref PublicSubnet2, !Ref PublicSubnet2Id]
+
+  PrivateSubnet1Idop:
+    Description: Private Subnet 1 ID
+    Value: !If [CreateVPCResources, !Ref PrivateSubnet1, !Ref PrivateSubnet1Id]
+
+  PrivateSubnet2Idop:
+    Description: Private Subnet 2 ID
+    Value: !If [CreateVPCResources, !Ref PrivateSubnet2, !Ref PrivateSubnet2Id]
